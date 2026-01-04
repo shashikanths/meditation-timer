@@ -1,0 +1,5 @@
+{
+  "name": "Meditation Timer",
+  "description": "A minimal meditation timer with real-time user tracking and customizable audio/backgrounds.",
+  "requestFramePermissions": []
+}

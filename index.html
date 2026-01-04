@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meditation Timer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --color-primary: #fb923c;
+        --color-primary-dark: #ea580c;
+        --color-primary-light: #fdba74;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background-color: #000;
+        color: #fff;
+        font-family: 'Inter', sans-serif;
+      }
+      .font-cinzel {
+        font-family: 'Cinzel', serif;
+      }
+      /* Primary color utilities */
+      .text-primary { color: var(--color-primary); }
+      .text-primary-dark { color: var(--color-primary-dark); }
+      .text-primary-light { color: var(--color-primary-light); }
+      .bg-primary { background-color: var(--color-primary); }
+      .bg-primary-dark { background-color: var(--color-primary-dark); }
+      .bg-primary-light { background-color: var(--color-primary-light); }
+      .border-primary { border-color: var(--color-primary); }
+      .border-primary-dark { border-color: var(--color-primary-dark); }
+      .border-primary-light { border-color: var(--color-primary-light); }
+      /* Opacity variants */
+      .text-primary-50 { color: color-mix(in srgb, var(--color-primary) 50%, transparent); }
+      .text-primary-40 { color: color-mix(in srgb, var(--color-primary) 40%, transparent); }
+      .text-primary-30 { color: color-mix(in srgb, var(--color-primary) 30%, transparent); }
+      .text-primary-20 { color: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+      .bg-primary-10 { background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+      .bg-primary-20 { background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+      .bg-primary-5 { background-color: color-mix(in srgb, var(--color-primary) 5%, transparent); }
+      .border-primary-30 { border-color: color-mix(in srgb, var(--color-primary) 30%, transparent); }
+      .border-primary-20 { border-color: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+      .border-primary-40 { border-color: color-mix(in srgb, var(--color-primary) 40%, transparent); }
+      .border-primary-50 { border-color: color-mix(in srgb, var(--color-primary) 50%, transparent); }
+      /* Glow effects */
+      .glow-primary { filter: drop-shadow(0 0 25px color-mix(in srgb, var(--color-primary) 40%, transparent)); }
+      .glow-primary-strong { filter: drop-shadow(0 0 30px color-mix(in srgb, var(--color-primary) 50%, transparent)); }
+    </style>
+    <link rel="stylesheet" href="/index.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
