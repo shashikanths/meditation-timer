@@ -5,13 +5,19 @@
 
 import { generateDisplayName } from './displayName';
 
+interface TimerSettings {
+  type: 'count-up' | 'count-down';
+  targetMinutes?: number;  // For count-down mode
+}
+
 interface UserSettings {
   userId: string;
   displayName: string;
-  selectedAudioId: string | null;  // Can be 'predefined-1' or 'custom'
+  selectedAudioId: string | null;  // Can be 'predefined-1', 'custom', or 'silence'
   selectedImageId: string | null;  // Can be 'predefined-1' or 'custom'
   customAudioName: string | null;
   customImageName: string | null;
+  timerSettings?: TimerSettings;
 }
 
 interface LocalStats {

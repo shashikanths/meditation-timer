@@ -30,6 +30,12 @@ export const AudioPlayer = forwardRef<HTMLAudioElement, AudioPlayerProps>(({ isM
       const settings = StorageManager.getSettings();
       const selectedId = settings.selectedAudioId;
 
+      // Handle silence option - no audio source
+      if (selectedId === 'silence') {
+        setAudioSource(null);
+        return;
+      }
+
       if (selectedId === 'custom') {
         // Load custom audio from IndexedDB
         const customAudio = await mediaCache.getFile('audio');

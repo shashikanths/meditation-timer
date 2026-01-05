@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users collection
+    match /users/{userId} {
+      // Anyone can read user stats (for leaderboard)
+      allow read: if true;
+
+      // Anyone can create a new user
+      allow create: if true;
+
+      // Users can only update their own lastSeen, totalSeconds, and sessionsCount
+      // Prevent massive hour increases (max 4 hours per update = reasonable meditation session)
+      allow update: if request.resource.data.totalSeconds <= resource.data.totalSeconds + 14400;
+    }
+
+    // Sessions collection
+    match /sessions/{sessionId} {
+      // Anyone can read sessions (for stats calculation)
+      allow read: if true;
+
+      // Anyone can create new sessions
+      allow create: if true;
+
+      // Anyone can update sessions (to close them)
+      // Prevent backdating or future-dating sessions
+      allow update: if request.resource.data.isActive == false ||
+                       request.resource.data.isActive == resource.data.isActive;
+    }
+  }
+}

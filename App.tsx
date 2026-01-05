@@ -11,38 +11,67 @@ import { AudioPlayer } from './components/AudioPlayer';
 import { StatsManager } from './components/StatsManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StorageManager } from './utils/storage';
+import { db, generateUUID } from './lib/firebase';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 const App: React.FC = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState(true);
+  const [isSilentMode, setIsSilentMode] = useState(false);
   const [userId, setUserId] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Initialize user ID and sync with backend
+  // Check if silent mode is selected
+  useEffect(() => {
+    const settings = StorageManager.getSettings();
+    if (settings.selectedAudioId === 'silence') {
+      setIsSilentMode(true);
+      setIsAudioBlocked(false);
+      setIsMuted(true);
+    }
+  }, []);
+
+  // Initialize user ID and sync with Firestore
   useEffect(() => {
     const initUser = async () => {
-      const id = StorageManager.getUserId();
+      let id = StorageManager.getUserId();
+
+      // If no user ID exists, generate one
+      if (!id) {
+        id = generateUUID();
+        localStorage.setItem('om-user-id', id);
+      }
+
       const displayName = StorageManager.getDisplayName();
       setUserId(id);
 
       try {
-        const response = await fetch('/api/users/init', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: id, displayName })
-        });
+        const userRef = doc(db, 'users', id);
+        const userDoc = await getDoc(userRef);
 
-        if (response.ok) {
-          const data = await response.json();
-          StorageManager.updateLocalStats({
-            totalSeconds: data.totalSeconds,
-            lastSession: null,
-            sessionsCount: data.sessionsCount
+        if (!userDoc.exists()) {
+          // Create new user in Firestore
+          await setDoc(userRef, {
+            id,
+            displayName: displayName || null,
+            createdAt: serverTimestamp(),
+            lastSeen: serverTimestamp(),
+            totalSeconds: 0,
+            sessionsCount: 0
           });
         }
-      } catch {
-        // Backend unavailable, running in local-only mode
+
+        // Load user data
+        const userData = userDoc.exists() ? userDoc.data() : { totalSeconds: 0, sessionsCount: 0 };
+        StorageManager.updateLocalStats({
+          totalSeconds: userData.totalSeconds || 0,
+          lastSession: null,
+          sessionsCount: userData.sessionsCount || 0
+        });
+      } catch (error) {
+        console.error('Error initializing user:', error);
+        // Firestore unavailable, running in local-only mode
       }
     };
 
@@ -125,9 +154,18 @@ const App: React.FC = () => {
             <StatsManager userId={userId} />
           </div>
 
-          <div className="flex flex-col items-center space-y-3 pointer-events-auto cursor-pointer" onClick={(e) => e.stopPropagation()}>
+          <div
+            className={`flex flex-col items-center space-y-3 pointer-events-auto ${isSilentMode ? 'cursor-default' : 'cursor-pointer hover:opacity-80'} transition-opacity`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!isSilentMode) {
+                handleInteraction();
+              }
+            }}
+            title={isSilentMode ? 'Silent meditation mode' : (isMuted ? 'Click to unmute' : 'Click to mute')}
+          >
             <div className="flex items-center space-x-1.5 h-6">
-              {!isMuted && !isAudioBlocked ? (
+              {!isMuted && !isAudioBlocked && !isSilentMode ? (
                 [1, 2, 3, 4, 5].map((i) => (
                   <div
                     key={i}
@@ -140,7 +178,7 @@ const App: React.FC = () => {
               )}
             </div>
             <span className="text-[10px] uppercase tracking-[0.3em] text-primary-30 font-medium">
-              {isMuted ? 'Muted' : 'Sound Active'}
+              {isSilentMode ? 'Silent Mode' : (isMuted ? 'Muted' : 'Sound Active')}
             </span>
           </div>
 

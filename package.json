@@ -9,10 +9,15 @@
     "preview": "vite preview",
     "server": "node server/index.cjs",
     "start": "concurrently \"npm run server\" \"npm run dev\"",
-    "seed": "node server/seed.cjs"
+    "seed": "node server/seed.cjs",
+    "deploy": "npm run build && firebase deploy",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:firestore": "firebase deploy --only firestore"
   },
   "dependencies": {
     "concurrently": "^9.2.1",
+    "firebase": "^12.7.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },

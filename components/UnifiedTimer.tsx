@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { StorageManager } from '../utils/storage';
 
 /**
  * UnifiedTimer - Combines SessionTimer (count-up) and CountdownTimer (preset countdown)
@@ -8,7 +9,7 @@ import React, { useState, useEffect, useRef } from 'react';
  * - Count-up mode: Open-ended meditation (elapsed time only)
  * - Count-down mode: Preset duration (10m, 20m, 30m, 1h, custom)
  * - When count-down reaches 0: Play audio cue + switch to count-up mode
- * - No state persistence across refreshes (resets on reload)
+ * - Persists selected timer mode across refreshes
  */
 
 interface TimerMode {
@@ -16,8 +17,20 @@ interface TimerMode {
   targetSeconds?: number;
 }
 
+// Load initial timer mode from storage
+const getInitialTimerMode = (): TimerMode => {
+  const settings = StorageManager.getSettings();
+  if (settings.timerSettings?.type === 'count-down' && settings.timerSettings.targetMinutes) {
+    return {
+      type: 'count-down',
+      targetSeconds: settings.timerSettings.targetMinutes * 60
+    };
+  }
+  return { type: 'count-up' };
+};
+
 export const UnifiedTimer: React.FC = () => {
-  const [mode, setMode] = useState<TimerMode>({ type: 'count-up' });
+  const [mode, setMode] = useState<TimerMode>(getInitialTimerMode);
   const [elapsed, setElapsed] = useState(0); // Total elapsed time in seconds
   const [isRunning, setIsRunning] = useState(true); // Auto-start on mount
   const [customInput, setCustomInput] = useState('');
@@ -86,6 +99,10 @@ export const UnifiedTimer: React.FC = () => {
     setMode({ type: 'count-down', targetSeconds: minutes * 60 });
     setElapsed(0);
     setIsRunning(true);
+    // Persist timer selection
+    StorageManager.updateSettings({
+      timerSettings: { type: 'count-down', targetMinutes: minutes }
+    });
   };
 
   // Handle custom duration input
@@ -102,6 +119,10 @@ export const UnifiedTimer: React.FC = () => {
     setMode({ type: 'count-up' });
     setElapsed(0);
     setIsRunning(true);
+    // Persist open session selection
+    StorageManager.updateSettings({
+      timerSettings: { type: 'count-up' }
+    });
   };
 
   const displayTime = getDisplayTime();
@@ -123,30 +144,27 @@ export const UnifiedTimer: React.FC = () => {
 
       {/* Preset Buttons */}
       <div className="flex flex-wrap gap-3 justify-center">
-        <button
-          onClick={() => handlePreset(10)}
-          className="px-6 py-2 bg-primary-10 hover:bg-primary-20 border border-primary-30 rounded text-white/90 text-sm uppercase tracking-[0.2em] transition-all duration-300"
-        >
-          10 Min
-        </button>
-        <button
-          onClick={() => handlePreset(20)}
-          className="px-6 py-2 bg-primary-10 hover:bg-primary-20 border border-primary-30 rounded text-white/90 text-sm uppercase tracking-[0.2em] transition-all duration-300"
-        >
-          20 Min
-        </button>
-        <button
-          onClick={() => handlePreset(30)}
-          className="px-6 py-2 bg-primary-10 hover:bg-primary-20 border border-primary-30 rounded text-white/90 text-sm uppercase tracking-[0.2em] transition-all duration-300"
-        >
-          30 Min
-        </button>
-        <button
-          onClick={() => handlePreset(60)}
-          className="px-6 py-2 bg-primary-10 hover:bg-primary-20 border border-primary-30 rounded text-white/90 text-sm uppercase tracking-[0.2em] transition-all duration-300"
-        >
-          1 Hour
-        </button>
+        {[
+          { minutes: 10, label: '10 Min' },
+          { minutes: 20, label: '20 Min' },
+          { minutes: 30, label: '30 Min' },
+          { minutes: 60, label: '1 Hour' }
+        ].map(({ minutes, label }) => {
+          const isActive = mode.type === 'count-down' && mode.targetSeconds === minutes * 60;
+          return (
+            <button
+              key={minutes}
+              onClick={() => handlePreset(minutes)}
+              className={`px-6 py-2 border rounded text-sm uppercase tracking-[0.2em] transition-all duration-300 ${
+                isActive
+                  ? 'bg-primary-30 border-primary text-white'
+                  : 'bg-primary-10 hover:bg-primary-20 border-primary-30 text-white/90'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Custom Duration Input */}

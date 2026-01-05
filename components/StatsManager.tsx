@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StorageManager } from '../utils/storage';
+import { db } from '../lib/firebase';
+import { doc, getDoc, collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 
 interface StatsManagerProps {
   userId: string;
@@ -24,32 +26,37 @@ export const StatsManager: React.FC<StatsManagerProps> = ({ userId }) => {
 
     const loadStats = async () => {
       try {
-        // Fetch user data from backend
-        const response = await fetch('/api/users/init', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, displayName: StorageManager.getDisplayName() })
-        });
+        // Fetch user data from Firestore
+        const userRef = doc(db, 'users', userId);
+        const userDoc = await getDoc(userRef);
 
-        if (response.ok) {
-          const data = await response.json();
+        if (userDoc.exists()) {
+          const data = userDoc.data();
           setStats({
-            totalSeconds: data.totalSeconds,
+            totalSeconds: data.totalSeconds || 0,
             lastSession: null,
-            sessionsCount: data.sessionsCount
+            sessionsCount: data.sessionsCount || 0
           });
 
-          // Fetch leaderboard rank
-          const leaderboardResponse = await fetch(`/api/meditation/leaderboard?userId=${userId}`);
-          if (leaderboardResponse.ok) {
-            const leaderboardData = await leaderboardResponse.json();
-            if (leaderboardData.currentUserRank) {
-              setLeaderboardRank(leaderboardData.currentUserRank.rank);
-            }
-          }
+          // Calculate leaderboard rank
+          const usersRef = collection(db, 'users');
+          const higherUsersQuery = query(
+            usersRef,
+            where('totalSeconds', '>', data.totalSeconds || 0)
+          );
+          const higherUsersSnapshot = await getDocs(higherUsersQuery);
+          const rank = higherUsersSnapshot.size + 1;
+          setLeaderboardRank(rank);
+
+          // Update localStorage
+          StorageManager.updateLocalStats({
+            totalSeconds: data.totalSeconds || 0,
+            lastSession: null,
+            sessionsCount: data.sessionsCount || 0
+          });
         }
       } catch (error) {
-        console.warn('Failed to load stats from backend:', error);
+        console.warn('Failed to load stats from Firestore:', error);
         // Load from localStorage as fallback
         const localStats = localStorage.getItem('om-local-stats');
         if (localStats) {

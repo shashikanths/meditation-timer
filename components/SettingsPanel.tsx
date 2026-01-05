@@ -6,6 +6,7 @@ interface SettingsPanelProps {
   userId: string;
   isOpen: boolean;
   onClose: () => void;
+  onSettingsChanged?: () => void;
 }
 
 interface MediaItem {
@@ -18,7 +19,8 @@ interface MediaItem {
 
 const PREDEFINED_AUDIO: MediaItem[] = [
   { id: 'om-mantra', type: 'audio', name: 'Om Mantra Chant', path: '/media/audio/predefined/om-mantra.mp3' },
-  { id: 'meditation-bell', type: 'audio', name: 'Meditation Bell (1 min)', path: '/media/audio/predefined/meditation-bell-1min.mp3' }
+  { id: 'meditation-bell', type: 'audio', name: 'Meditation Bell (1 min)', path: '/media/audio/predefined/meditation-bell-1min.mp3' },
+  { id: 'silence', type: 'audio', name: 'Silent Meditation', path: '' }
 ];
 
 const PREDEFINED_IMAGES: MediaItem[] = [
@@ -37,12 +39,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const [pendingReload, setPendingReload] = useState(false);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle close with pending reload
+  const handleClose = () => {
+    onClose();
+    if (pendingReload) {
+      setTimeout(() => window.location.reload(), 100);
+    }
+  };
 
   // Load settings and custom media on mount
   useEffect(() => {
     if (!isOpen) return;
+
+    // Reset pending reload when panel opens
+    setPendingReload(false);
 
     const loadSettings = async () => {
       const settings = StorageManager.getSettings();
@@ -100,8 +114,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
       StorageManager.updateSettings({ selectedImageId: id });
     }
 
-    // Reload to apply changes
-    setTimeout(() => window.location.reload(), 300);
+    // Mark for reload when panel closes
+    setPendingReload(true);
   };
 
   // Handle custom file upload
@@ -126,8 +140,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
         });
       }
 
-      // Reload to apply changes
-      setTimeout(() => window.location.reload(), 300);
+      // Mark for reload when panel closes
+      setPendingReload(true);
     } catch (error) {
       console.error('Failed to save file:', error);
     } finally {
@@ -155,7 +169,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
       });
     }
 
-    setTimeout(() => window.location.reload(), 300);
+    // Mark for reload when panel closes
+    setPendingReload(true);
   };
 
   if (!isOpen) return null;
@@ -167,7 +182,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="bg-black/95 border border-primary-30 rounded-lg p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto"
@@ -177,7 +192,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-xl font-cinzel text-white/90">Settings</h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="text-primary-50 hover:text-primary text-2xl transition-colors"
           >
             &times;
