@@ -8,7 +8,10 @@ interface AudioPlayerProps {
 
 const AUDIO_PATHS: Record<string, string> = {
   'om-mantra': '/media/audio/predefined/om-mantra.mp3',
-  'meditation-bell': '/media/audio/predefined/meditation-bell-1min.mp3'
+  'meditation-bell': '/media/audio/predefined/meditation-bell-1min.mp3',
+  'rain': '/media/audio/predefined/11L-rain_storm-14472913.mp3',
+  'fire': '/media/audio/predefined/fire.mp3',
+  'ocean': '/media/audio/predefined/ocean-waves.mp3'
 };
 
 export const AudioPlayer = forwardRef<HTMLAudioElement, AudioPlayerProps>(({ isMuted }, ref) => {

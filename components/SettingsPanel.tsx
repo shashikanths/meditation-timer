@@ -20,6 +20,9 @@ interface MediaItem {
 const PREDEFINED_AUDIO: MediaItem[] = [
   { id: 'om-mantra', type: 'audio', name: 'Om Mantra Chant', path: '/media/audio/predefined/om-mantra.mp3' },
   { id: 'meditation-bell', type: 'audio', name: 'Meditation Bell (1 min)', path: '/media/audio/predefined/meditation-bell-1min.mp3' },
+  { id: 'rain', type: 'audio', name: 'Rain Storm', path: '/media/audio/predefined/11L-rain_storm-14472913.mp3' },
+  { id: 'fire', type: 'audio', name: 'Crackling Fire', path: '/media/audio/predefined/fire.mp3' },
+  { id: 'ocean', type: 'audio', name: 'Ocean Waves', path: '/media/audio/predefined/ocean-waves.mp3' },
   { id: 'silence', type: 'audio', name: 'Silent Meditation', path: '' }
 ];
 
