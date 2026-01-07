@@ -26,11 +26,21 @@ interface LocalStats {
   sessionsCount: number;
 }
 
+// Active session checkpoint - saved frequently to survive page close
+interface SessionCheckpoint {
+  sessionId: string;
+  userId: string;
+  startedAt: number;  // timestamp
+  lastCheckpoint: number;  // timestamp of last save
+  elapsedSeconds: number;  // seconds elapsed at last checkpoint
+}
+
 const STORAGE_KEYS = {
   USER_ID: 'om-user-id',
   DISPLAY_NAME: 'om-display-name',
   SETTINGS: 'om-user-settings',
-  LOCAL_STATS: 'om-local-stats'
+  LOCAL_STATS: 'om-local-stats',
+  SESSION_CHECKPOINT: 'om-session-checkpoint'
 };
 
 const DB_NAME = 'MeditationTimerDB';
@@ -234,5 +244,36 @@ export const StorageManager = {
     });
     await mediaCache.deleteFile('audio');
     await mediaCache.deleteFile('image');
+  },
+
+  /**
+   * Save session checkpoint (call frequently during active session)
+   */
+  saveSessionCheckpoint: (checkpoint: SessionCheckpoint): void => {
+    localStorage.setItem(STORAGE_KEYS.SESSION_CHECKPOINT, JSON.stringify(checkpoint));
+  },
+
+  /**
+   * Get active session checkpoint (if exists)
+   */
+  getSessionCheckpoint: (): SessionCheckpoint | null => {
+    const stored = localStorage.getItem(STORAGE_KEYS.SESSION_CHECKPOINT);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * Clear session checkpoint (call when session ends normally)
+   */
+  clearSessionCheckpoint: (): void => {
+    localStorage.removeItem(STORAGE_KEYS.SESSION_CHECKPOINT);
   }
 };
+
+export type { SessionCheckpoint };

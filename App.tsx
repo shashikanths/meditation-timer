@@ -3,24 +3,25 @@
  * A minimal, atmospheric application for meditation with real-time tracking.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GlobalCounter } from './components/GlobalCounter';
 import { UnifiedTimer } from './components/UnifiedTimer';
 import { BackgroundManager } from './components/BackgroundManager';
-import { AudioPlayer } from './components/AudioPlayer';
+import { AudioPlayer, AudioPlayerHandle } from './components/AudioPlayer';
 import { StatsManager } from './components/StatsManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StorageManager } from './utils/storage';
-import { db, generateUUID } from './lib/firebase';
+import { db } from './lib/firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
-const App: React.FC = () => {
+const App = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState(true);
   const [isSilentMode, setIsSilentMode] = useState(false);
   const [userId, setUserId] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<AudioPlayerHandle | null>(null);
 
   // Check if silent mode is selected
   useEffect(() => {
@@ -39,7 +40,7 @@ const App: React.FC = () => {
 
       // If no user ID exists, generate one
       if (!id) {
-        id = generateUUID();
+        id = crypto.randomUUID();
         localStorage.setItem('om-user-id', id);
       }
 
@@ -78,55 +79,31 @@ const App: React.FC = () => {
     initUser();
   }, []);
 
-  // Handle user interaction to start/pause audio
+  // Handle user interaction to start/toggle audio
   const handleInteraction = async () => {
-    if (!audioRef.current) {
+    if (isSilentMode) {
       setIsAudioBlocked(false);
       return;
     }
 
     try {
-      if (isAudioBlocked || isMuted) {
-        if (audioRef.current.error || audioRef.current.readyState === 0) {
-          audioRef.current.load();
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-
-        await audioRef.current.play();
+      if (isAudioBlocked || !isPlaying) {
+        await audioRef.current?.play();
+        setIsPlaying(true);
         setIsMuted(false);
         setIsAudioBlocked(false);
+      } else if (isMuted) {
+        audioRef.current?.setMuted(false);
+        setIsMuted(false);
       } else {
-        audioRef.current.pause();
+        audioRef.current?.setMuted(true);
         setIsMuted(true);
       }
-    } catch {
+    } catch (error) {
+      console.error('Audio interaction failed:', error);
       setIsAudioBlocked(false);
-      // Retry audio playback
-      if (audioRef.current) {
-        audioRef.current.load();
-        setTimeout(() => {
-          audioRef.current?.play().then(() => setIsMuted(false)).catch(() => {});
-        }, 300);
-      }
     }
   };
-
-  // Check autoplay on mount
-  useEffect(() => {
-    const checkAutoplay = async () => {
-      if (audioRef.current) {
-        try {
-          await audioRef.current.play();
-          setIsAudioBlocked(false);
-          setIsMuted(false);
-        } catch {
-          setIsAudioBlocked(true);
-          setIsMuted(true);
-        }
-      }
-    };
-    checkAutoplay();
-  }, []);
 
   return (
     <div
