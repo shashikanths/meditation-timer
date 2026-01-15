@@ -11,8 +11,7 @@ import { AudioPlayer, AudioPlayerHandle } from './components/AudioPlayer';
 import { StatsManager } from './components/StatsManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StorageManager, SESSION_BACKGROUND_THRESHOLD_MS } from './utils/storage';
-import { db } from './lib/firebase';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { initializeUser } from './lib/database';
 
 const App = () => {
   const [isMuted, setIsMuted] = useState(false);
@@ -71,7 +70,7 @@ const App = () => {
     }
   }, [isPlaying, isAudioBlocked, isSilentMode]);
 
-  // Initialize user ID and sync with Firestore
+  // Initialize user ID and sync with database
   useEffect(() => {
     const initUser = async () => {
       let id = StorageManager.getUserId();
@@ -86,23 +85,9 @@ const App = () => {
       setUserId(id);
 
       try {
-        const userRef = doc(db, 'users', id);
-        const userDoc = await getDoc(userRef);
+        // Initialize user in database (local SQLite or Firebase based on environment)
+        const userData = await initializeUser(id, displayName);
 
-        if (!userDoc.exists()) {
-          // Create new user in Firestore
-          await setDoc(userRef, {
-            id,
-            displayName: displayName || null,
-            createdAt: serverTimestamp(),
-            lastSeen: serverTimestamp(),
-            totalSeconds: 0,
-            sessionsCount: 0
-          });
-        }
-
-        // Load user data
-        const userData = userDoc.exists() ? userDoc.data() : { totalSeconds: 0, sessionsCount: 0 };
         StorageManager.updateLocalStats({
           totalSeconds: userData.totalSeconds || 0,
           lastSession: null,
@@ -110,7 +95,7 @@ const App = () => {
         });
       } catch (error) {
         console.error('Error initializing user:', error);
-        // Firestore unavailable, running in local-only mode
+        // Database unavailable, running in local-only mode
       }
     };
 
@@ -218,39 +203,42 @@ const App = () => {
           )}
         </main>
 
-        <footer className="w-full flex flex-col md:flex-row items-center md:items-end justify-between gap-6">
-          <div className="pointer-events-auto" onClick={(e) => e.stopPropagation()}>
+        <footer className="w-full relative">
+          {/* Left: Stats - absolutely positioned */}
+          <div className="pointer-events-auto md:absolute md:left-0 md:bottom-0" onClick={(e) => e.stopPropagation()}>
             <StatsManager userId={userId} />
           </div>
 
-          <div
-            className={`flex flex-col items-center space-y-3 pointer-events-auto ${isSilentMode ? 'cursor-default' : 'cursor-pointer hover:opacity-80'} transition-opacity`}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!isSilentMode) {
-                handleInteraction();
-              }
-            }}
-            title={isSilentMode ? 'Silent meditation mode' : (isMuted ? 'Click to unmute' : 'Click to mute')}
-          >
-            <div className="flex items-center space-x-1.5 h-6">
-              {!isMuted && !isAudioBlocked && !isSilentMode ? (
-                [1, 2, 3, 4, 5].map((i) => (
-                  <div
-                    key={i}
-                    className="w-1 bg-primary rounded-full animate-pulse"
-                    style={{ animationDelay: `${i * 0.1}s`, height: `${40 + Math.random() * 60}%` }}
-                  />
-                ))
-              ) : (
-                <div className="h-[2px] w-12 bg-primary-20" />
-              )}
+          {/* Center: Sound indicator - always centered */}
+          <div className="flex justify-center mt-6 md:mt-0">
+            <div
+              className={`flex flex-col items-center space-y-3 pointer-events-auto ${isSilentMode ? 'cursor-default' : 'cursor-pointer hover:opacity-80'} transition-opacity`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!isSilentMode) {
+                  handleInteraction();
+                }
+              }}
+              title={isSilentMode ? 'Silent meditation mode' : (isMuted ? 'Click to unmute' : 'Click to mute')}
+            >
+              <div className="flex items-center space-x-1.5 h-6">
+                {!isMuted && !isAudioBlocked && !isSilentMode ? (
+                  [1, 2, 3, 4, 5].map((i) => (
+                    <div
+                      key={i}
+                      className="w-1 bg-primary rounded-full animate-pulse"
+                      style={{ animationDelay: `${i * 0.1}s`, height: `${40 + Math.random() * 60}%` }}
+                    />
+                  ))
+                ) : (
+                  <div className="h-[2px] w-12 bg-primary-20" />
+                )}
+              </div>
+              <span className="text-[10px] uppercase tracking-[0.3em] text-primary-30 font-medium">
+                {isSilentMode ? 'Silent Mode' : (isMuted ? 'Muted' : 'Sound Active')}
+              </span>
             </div>
-            <span className="text-[10px] uppercase tracking-[0.3em] text-primary-30 font-medium">
-              {isSilentMode ? 'Silent Mode' : (isMuted ? 'Muted' : 'Sound Active')}
-            </span>
           </div>
-
         </footer>
       </div>
 

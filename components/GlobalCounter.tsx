@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { db } from '../lib/firebase';
-import { doc, updateDoc, serverTimestamp, collection, query, where, getCountFromServer, Timestamp, addDoc, getDoc, increment } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, collection, query, where, getCountFromServer, Timestamp, addDoc, increment } from 'firebase/firestore';
 import { StorageManager, SessionCheckpoint, SESSION_BACKGROUND_THRESHOLD_MS } from '../utils/storage';
+import { getUserCounts, isUsingLocalDatabase, updateUser, endSession, getUser } from '../lib/database';
 
 interface GlobalCounterProps {
   userId: string;
@@ -86,24 +87,28 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
         // Session ended - calculate duration
         // Use lastHiddenAt if page was backgrounded, otherwise lastCheckpoint
         const sessionEndTime = checkpoint.lastHiddenAt || checkpoint.lastCheckpoint;
-        const totalSeconds = Math.floor((sessionEndTime - checkpoint.startedAt) / 1000);
+        const totalSeconds = Math.max(0, Math.floor((sessionEndTime - checkpoint.startedAt) / 1000));
+
+        // Skip if duration is 0 or negative (clock skew protection)
+        if (totalSeconds <= 0) {
+          console.log(`Skipping orphaned session recovery: invalid duration (${totalSeconds}s)`);
+          StorageManager.clearSessionCheckpoint();
+          return;
+        }
 
         console.log(`Recovering orphaned session: ${totalSeconds} seconds (ended at ${checkpoint.lastHiddenAt ? 'lastHiddenAt' : 'lastCheckpoint'})`);
 
         try {
-          const userRef = doc(db, 'users', userId);
-          const userDoc = await getDoc(userRef);
-
-          if (userDoc.exists()) {
-            // Update user's total meditation time
-            await updateDoc(userRef, {
-              totalSeconds: increment(totalSeconds),
-              sessionsCount: increment(1),
-              lastSeen: serverTimestamp()
+          // Update user stats via abstraction layer
+          const userData = await getUser(userId);
+          if (userData) {
+            await updateUser(userId, {
+              totalSecondsIncrement: totalSeconds,
+              sessionsCountIncrement: 1,
+              lastSeen: true
             });
 
             // Update local stats
-            const userData = userDoc.data();
             StorageManager.updateLocalStats({
               totalSeconds: (userData.totalSeconds || 0) + totalSeconds,
               lastSession: new Date(sessionEndTime).toISOString(),
@@ -111,16 +116,10 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
             });
           }
 
-          // Close the orphaned Firestore session if it exists
+          // Close the orphaned session if it exists
           if (checkpoint.sessionId) {
-            const sessionRef = doc(db, 'sessions', checkpoint.sessionId);
-            await updateDoc(sessionRef, {
-              endedAt: Timestamp.fromMillis(sessionEndTime),
-              durationSeconds: totalSeconds,
-              isActive: false,
-              recoveredFromCheckpoint: true
-            }).catch(() => {
-              // Session might not exist in Firestore, that's ok
+            await endSession(checkpoint.sessionId, totalSeconds, sessionEndTime).catch(() => {
+              // Session might not exist, that's ok
             });
           }
         } catch (error) {
@@ -157,68 +156,132 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
     if (!userId) return;
 
     try {
-      const userRef = doc(db, 'users', userId);
+      // Use local SQLite in dev mode, Firebase in production
+      if (isUsingLocalDatabase()) {
+        // Local dev mode - use Express API for all operations
+        if (isClosing) {
+          // End session via API
+          if (sessionIdRef.current && sessionStartTimeRef.current) {
+            const durationSeconds = Math.max(0, Math.floor((Date.now() - sessionStartTimeRef.current) / 1000));
 
-      // Update user's last_seen
-      await updateDoc(userRef, {
-        lastSeen: serverTimestamp()
-      });
+            // End session and update user stats via API
+            await fetch('/api/meditation/end', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: sessionIdRef.current, durationSeconds })
+            });
 
-      if (isClosing) {
-        // Close active session and update user stats
-        if (sessionIdRef.current && sessionStartTimeRef.current) {
-          const durationSeconds = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000);
+            // Update user stats
+            if (durationSeconds > 0) {
+              await fetch(`/api/users/${userId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  totalSecondsIncrement: durationSeconds,
+                  sessionsCountIncrement: 1,
+                  lastSeen: true
+                })
+              });
+            }
 
-          // Update session in Firestore
-          const sessionRef = doc(db, 'sessions', sessionIdRef.current);
-          await updateDoc(sessionRef, {
-            endedAt: serverTimestamp(),
-            durationSeconds,
-            isActive: false
-          }).catch(() => {});
-
-          // Update user stats
-          await updateDoc(userRef, {
-            totalSeconds: increment(durationSeconds),
-            sessionsCount: increment(1)
+            StorageManager.clearSessionCheckpoint();
+            sessionIdRef.current = null;
+            sessionStartTimeRef.current = null;
+          }
+        } else {
+          // Heartbeat - update last_seen and start session if needed
+          await fetch('/api/meditation/stats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, status: 'active' })
           });
 
-          // Clear checkpoint since session ended normally
-          StorageManager.clearSessionCheckpoint();
+          if (!sessionIdRef.current) {
+            // Start new session via API
+            const response = await fetch('/api/meditation/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId })
+            });
+            const data = await response.json();
+            sessionIdRef.current = data.sessionId;
+            sessionStartTimeRef.current = Date.now();
+          }
 
-          sessionIdRef.current = null;
-          sessionStartTimeRef.current = null;
+          saveCheckpoint();
         }
+
+        // Get counts from local SQLite
+        const counts = await getUserCounts();
+        setActive(counts.activeCount);
+        setTotalUnique(counts.totalCount);
       } else {
-        // Check if we need to start a new session
-        if (!sessionIdRef.current) {
-          // Create new active session
-          const newSession = await addDoc(collection(db, 'sessions'), {
-            userId,
-            startedAt: serverTimestamp(),
-            isActive: true
-          });
-          sessionIdRef.current = newSession.id;
-          sessionStartTimeRef.current = Date.now();
+        // Production mode - use Firebase directly
+        const userRef = doc(db, 'users', userId);
+
+        // Update user's last_seen
+        await updateDoc(userRef, {
+          lastSeen: serverTimestamp()
+        });
+
+        if (isClosing) {
+          // Close active session and update user stats
+          if (sessionIdRef.current && sessionStartTimeRef.current) {
+            const durationSeconds = Math.max(0, Math.floor((Date.now() - sessionStartTimeRef.current) / 1000));
+
+            // Update session in Firestore
+            const sessionRef = doc(db, 'sessions', sessionIdRef.current);
+            await updateDoc(sessionRef, {
+              endedAt: serverTimestamp(),
+              durationSeconds,
+              isActive: false
+            }).catch(() => {});
+
+            // Update user stats (only if positive duration)
+            if (durationSeconds > 0) {
+              await updateDoc(userRef, {
+                totalSeconds: increment(durationSeconds),
+                sessionsCount: increment(1)
+              });
+            }
+
+            // Clear checkpoint since session ended normally
+            StorageManager.clearSessionCheckpoint();
+
+            sessionIdRef.current = null;
+            sessionStartTimeRef.current = null;
+          }
+        } else {
+          // Check if we need to start a new session
+          if (!sessionIdRef.current) {
+            // Create new active session
+            const newSession = await addDoc(collection(db, 'sessions'), {
+              userId,
+              startedAt: serverTimestamp(),
+              isActive: true
+            });
+            sessionIdRef.current = newSession.id;
+            sessionStartTimeRef.current = Date.now();
+          }
+
+          // Save checkpoint on every heartbeat
+          saveCheckpoint();
         }
 
-        // Save checkpoint on every heartbeat
-        saveCheckpoint();
+        // Get counts from Firebase
+        const thirtySecondsAgo = Timestamp.fromMillis(Date.now() - 30000);
+        const usersRef = collection(db, 'users');
+        const activeQuery = query(usersRef, where('lastSeen', '>=', thirtySecondsAgo));
+        const activeSnapshot = await getCountFromServer(activeQuery);
+        const activeCount = activeSnapshot.data().count;
+
+        // Calculate total unique users
+        const totalSnapshot = await getCountFromServer(collection(db, 'users'));
+        const totalUniqueUsers = totalSnapshot.data().count;
+
+        setActive(activeCount);
+        setTotalUnique(totalUniqueUsers);
       }
-
-      // Calculate active count (users with last_seen < 30 seconds ago)
-      const thirtySecondsAgo = Timestamp.fromMillis(Date.now() - 30000);
-      const usersRef = collection(db, 'users');
-      const activeQuery = query(usersRef, where('lastSeen', '>=', thirtySecondsAgo));
-      const activeSnapshot = await getCountFromServer(activeQuery);
-      const activeCount = activeSnapshot.data().count;
-
-      // Calculate total unique users
-      const totalSnapshot = await getCountFromServer(collection(db, 'users'));
-      const totalUniqueUsers = totalSnapshot.data().count;
-
-      setActive(activeCount);
-      setTotalUnique(totalUniqueUsers);
     } catch (err) {
       console.warn('Failed to fetch stats:', err);
       // Still save checkpoint even if Firestore fails
@@ -260,30 +323,24 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
     // Handle explicit session end (from End Session button)
     const handleEndSession = async () => {
       if (sessionIdRef.current && sessionStartTimeRef.current) {
-        const durationSeconds = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000);
+        const durationSeconds = Math.max(0, Math.floor((Date.now() - sessionStartTimeRef.current) / 1000));
 
         try {
-          const userRef = doc(db, 'users', userId);
+          // End session via abstraction layer
+          await endSession(sessionIdRef.current, durationSeconds).catch(() => {});
 
-          // Update session in Firestore
-          const sessionRef = doc(db, 'sessions', sessionIdRef.current);
-          await updateDoc(sessionRef, {
-            endedAt: serverTimestamp(),
-            durationSeconds,
-            isActive: false
-          }).catch(() => {});
-
-          // Update user stats
-          await updateDoc(userRef, {
-            totalSeconds: increment(durationSeconds),
-            sessionsCount: increment(1),
-            lastSeen: serverTimestamp()
-          });
+          // Update user stats (only if positive duration)
+          if (durationSeconds > 0) {
+            await updateUser(userId, {
+              totalSecondsIncrement: durationSeconds,
+              sessionsCountIncrement: 1,
+              lastSeen: true
+            });
+          }
 
           // Update local stats
-          const userDoc = await getDoc(userRef);
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
+          const userData = await getUser(userId);
+          if (userData) {
             StorageManager.updateLocalStats({
               totalSeconds: userData.totalSeconds || 0,
               lastSession: new Date().toISOString(),
@@ -320,30 +377,24 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
             console.log(`Session was backgrounded for ${Math.floor(timeSinceHidden / 1000)}s - ending session`);
 
             if (sessionIdRef.current && sessionStartTimeRef.current) {
-              const durationSeconds = Math.floor((lastHiddenAtRef.current - sessionStartTimeRef.current) / 1000);
+              const durationSeconds = Math.max(0, Math.floor((lastHiddenAtRef.current - sessionStartTimeRef.current) / 1000));
 
               try {
-                const userRef = doc(db, 'users', userId);
+                // End session via abstraction layer - ended at lastHiddenAt
+                await endSession(sessionIdRef.current, durationSeconds, lastHiddenAtRef.current).catch(() => {});
 
-                // Update session in Firestore - ended at lastHiddenAt
-                const sessionRef = doc(db, 'sessions', sessionIdRef.current);
-                await updateDoc(sessionRef, {
-                  endedAt: Timestamp.fromMillis(lastHiddenAtRef.current),
-                  durationSeconds,
-                  isActive: false
-                }).catch(() => {});
-
-                // Update user stats
-                await updateDoc(userRef, {
-                  totalSeconds: increment(durationSeconds),
-                  sessionsCount: increment(1),
-                  lastSeen: serverTimestamp()
-                });
+                // Update user stats (only if positive duration)
+                if (durationSeconds > 0) {
+                  await updateUser(userId, {
+                    totalSecondsIncrement: durationSeconds,
+                    sessionsCountIncrement: 1,
+                    lastSeen: true
+                  });
+                }
 
                 // Update local stats
-                const userDoc = await getDoc(userRef);
-                if (userDoc.exists()) {
-                  const userData = userDoc.data();
+                const userData = await getUser(userId);
+                if (userData) {
                   StorageManager.updateLocalStats({
                     totalSeconds: userData.totalSeconds || 0,
                     lastSession: new Date(lastHiddenAtRef.current).toISOString(),

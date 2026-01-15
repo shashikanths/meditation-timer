@@ -205,13 +205,12 @@ app.get('/api/meditation/leaderboard', (req, res) => {
     // Get top users by total_seconds with display names
     const topUsers = db.prepare(`
       SELECT
-        ROW_NUMBER() OVER (ORDER BY total_seconds DESC) as rank,
+        ROW_NUMBER() OVER (ORDER BY total_seconds DESC, created_at ASC) as rank,
         id,
         display_name,
         total_seconds
       FROM users
-      WHERE total_seconds > 0
-      ORDER BY total_seconds DESC
+      ORDER BY total_seconds DESC, created_at ASC
       LIMIT ?
     `).all(limit);
 
@@ -392,6 +391,125 @@ app.put('/api/preferences/:userId', (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Error in /api/preferences/:userId:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/users/:userId - Get user by ID
+app.get('/api/users/:userId', (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      user: {
+        id: user.id,
+        displayName: user.display_name,
+        totalSeconds: user.total_seconds,
+        sessionsCount: user.sessions_count,
+        lastSeen: user.last_seen,
+        createdAt: user.created_at
+      }
+    });
+  } catch (error) {
+    console.error('Error in GET /api/users/:userId:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/users/:userId - Update user
+app.put('/api/users/:userId', (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { displayName, totalSecondsIncrement, sessionsCountIncrement, lastSeen } = req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (displayName !== undefined) {
+      updates.push('display_name = ?');
+      params.push(displayName);
+    }
+
+    if (totalSecondsIncrement !== undefined) {
+      updates.push('total_seconds = total_seconds + ?');
+      params.push(totalSecondsIncrement);
+    }
+
+    if (sessionsCountIncrement !== undefined) {
+      updates.push('sessions_count = sessions_count + ?');
+      params.push(sessionsCountIncrement);
+    }
+
+    if (lastSeen) {
+      updates.push('last_seen = CURRENT_TIMESTAMP');
+    }
+
+    if (updates.length > 0) {
+      params.push(userId);
+      db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error in PUT /api/users/:userId:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/meditation/start - Start a new session
+app.post('/api/meditation/start', (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    // Close any existing active sessions for this user
+    db.prepare(`
+      UPDATE sessions
+      SET ended_at = CURRENT_TIMESTAMP, is_active = FALSE
+      WHERE user_id = ? AND is_active = TRUE
+    `).run(userId);
+
+    // Create new session
+    const result = db.prepare(`
+      INSERT INTO sessions (user_id, started_at, is_active)
+      VALUES (?, CURRENT_TIMESTAMP, TRUE)
+    `).run(userId);
+
+    res.json({ sessionId: result.lastInsertRowid.toString() });
+  } catch (error) {
+    console.error('Error in POST /api/meditation/start:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/meditation/end - End a session
+app.post('/api/meditation/end', (req, res) => {
+  try {
+    const { sessionId, durationSeconds } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    db.prepare(`
+      UPDATE sessions
+      SET ended_at = CURRENT_TIMESTAMP,
+          duration_seconds = ?,
+          is_active = FALSE
+      WHERE id = ?
+    `).run(durationSeconds || 0, sessionId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error in POST /api/meditation/end:', error);
     res.status(500).json({ error: error.message });
   }
 });
