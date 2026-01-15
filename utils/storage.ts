@@ -26,6 +26,10 @@ interface LocalStats {
   sessionsCount: number;
 }
 
+// Session continuation threshold: only applies when page was backgrounded
+// If page was in foreground (even with screen locked), session continues indefinitely
+export const SESSION_BACKGROUND_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+
 // Active session checkpoint - saved frequently to survive page close
 interface SessionCheckpoint {
   sessionId: string;
@@ -33,6 +37,8 @@ interface SessionCheckpoint {
   startedAt: number;  // timestamp
   lastCheckpoint: number;  // timestamp of last save
   elapsedSeconds: number;  // seconds elapsed at last checkpoint
+  wasPageVisible: boolean;  // true if page was in foreground at last checkpoint
+  lastHiddenAt: number | null;  // timestamp when page last went to background (null if never hidden)
 }
 
 const STORAGE_KEYS = {

@@ -10,7 +10,7 @@ import { BackgroundManager } from './components/BackgroundManager';
 import { AudioPlayer, AudioPlayerHandle } from './components/AudioPlayer';
 import { StatsManager } from './components/StatsManager';
 import { SettingsPanel } from './components/SettingsPanel';
-import { StorageManager } from './utils/storage';
+import { StorageManager, SESSION_BACKGROUND_THRESHOLD_MS } from './utils/storage';
 import { db } from './lib/firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -23,15 +23,53 @@ const App = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<AudioPlayerHandle | null>(null);
 
-  // Check if silent mode is selected
+  // Check if silent mode is selected or if resuming an existing session
   useEffect(() => {
     const settings = StorageManager.getSettings();
     if (settings.selectedAudioId === 'silence') {
       setIsSilentMode(true);
       setIsAudioBlocked(false);
       setIsMuted(true);
+      return;
+    }
+
+    // Check if we're resuming an existing session
+    const checkpoint = StorageManager.getSessionCheckpoint();
+    if (checkpoint && checkpoint.startedAt) {
+      // Determine if session should continue (same logic as GlobalCounter/UnifiedTimer)
+      const shouldContinue = (() => {
+        if (checkpoint.wasPageVisible) {
+          return true;
+        }
+        if (checkpoint.lastHiddenAt) {
+          const timeSinceHidden = Date.now() - checkpoint.lastHiddenAt;
+          return timeSinceHidden <= SESSION_BACKGROUND_THRESHOLD_MS;
+        }
+        const timeSinceLastCheckpoint = Date.now() - checkpoint.lastCheckpoint;
+        return timeSinceLastCheckpoint <= SESSION_BACKGROUND_THRESHOLD_MS;
+      })();
+
+      if (shouldContinue) {
+        // Resuming session - skip the entry overlay and auto-play audio
+        setIsAudioBlocked(false);
+        setIsPlaying(true);
+        // Audio will be started by the effect below after audioRef is set
+      }
     }
   }, []);
+
+  // Auto-play audio when resuming a session (after audioRef is ready)
+  useEffect(() => {
+    if (isPlaying && !isAudioBlocked && !isSilentMode && audioRef.current) {
+      // Try to auto-play - this may fail due to browser autoplay policy
+      // but will work if the browser remembers the user's previous interaction
+      audioRef.current.play().catch(() => {
+        // Autoplay blocked - user will need to tap to start audio
+        // But session still continues without audio
+        console.log('Audio autoplay blocked on resume - session continues without audio');
+      });
+    }
+  }, [isPlaying, isAudioBlocked, isSilentMode]);
 
   // Initialize user ID and sync with Firestore
   useEffect(() => {
@@ -79,6 +117,36 @@ const App = () => {
     initUser();
   }, []);
 
+  // Handle ending the session (from button click)
+  const handleEndSession = () => {
+    // Stop audio
+    audioRef.current?.pause();
+    setIsPlaying(false);
+    setIsMuted(false);
+
+    // Show entry overlay again
+    setIsAudioBlocked(true);
+
+    // Dispatch custom event to notify GlobalCounter to end the session
+    window.dispatchEvent(new CustomEvent('endMeditationSession'));
+  };
+
+  // Listen for session end from GlobalCounter (background timeout)
+  useEffect(() => {
+    const handleSessionEnded = () => {
+      // Stop audio and show entry overlay
+      audioRef.current?.pause();
+      setIsPlaying(false);
+      setIsMuted(false);
+      setIsAudioBlocked(true);
+    };
+
+    window.addEventListener('endMeditationSession', handleSessionEnded);
+    return () => {
+      window.removeEventListener('endMeditationSession', handleSessionEnded);
+    };
+  }, []);
+
   // Handle user interaction to start/toggle audio
   const handleInteraction = async () => {
     if (isSilentMode) {
@@ -124,6 +192,16 @@ const App = () => {
 
         <main className="w-full max-w-4xl flex flex-col items-center space-y-8 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
           <UnifiedTimer />
+
+          {/* End Session Button - only show when session is active */}
+          {!isAudioBlocked && (
+            <button
+              onClick={handleEndSession}
+              className="px-8 py-3 border-2 border-red-500/50 rounded-lg text-red-400 text-sm uppercase tracking-[0.3em] font-medium hover:bg-red-500/20 hover:border-red-500 transition-all duration-300"
+            >
+              End Session
+            </button>
+          )}
         </main>
 
         <footer className="w-full flex flex-col md:flex-row items-center md:items-end justify-between gap-6">

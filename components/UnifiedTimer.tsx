@@ -2,14 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StorageManager } from '../utils/storage';
 
 /**
- * UnifiedTimer - Combines SessionTimer (count-up) and CountdownTimer (preset countdown)
+ * UnifiedTimer - Display timer for meditation sessions
  *
  * Features:
- * - Auto-starts on mount
- * - Count-up mode: Open-ended meditation (elapsed time only)
- * - Count-down mode: Preset duration (10m, 20m, 30m, 1h, custom)
- * - When count-down reaches 0: Play audio cue + switch to count-up mode
- * - Persists selected timer mode across refreshes
+ * - Uses session checkpoint startedAt as single source of truth
+ * - Count-up mode: Shows elapsed time since session start
+ * - Count-down mode: Shows remaining time to goal (but session continues after)
+ * - Changing timer mode doesn't reset the session - just changes display
+ * - When count-down reaches 0: Play audio cue + switch to count-up showing overflow
  */
 
 interface TimerMode {
@@ -31,46 +31,79 @@ const getInitialTimerMode = (): TimerMode => {
 
 export const UnifiedTimer: React.FC = () => {
   const [mode, setMode] = useState<TimerMode>(getInitialTimerMode);
-  const [elapsed, setElapsed] = useState(0); // Total elapsed time in seconds
-  const [isRunning, setIsRunning] = useState(true); // Auto-start on mount
+  const [elapsed, setElapsed] = useState(0); // Elapsed seconds from session start
   const [customInput, setCustomInput] = useState('');
+  const [hasPlayedCompletionSound, setHasPlayedCompletionSound] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Timer interval
-  useEffect(() => {
-    if (isRunning) {
-      intervalRef.current = setInterval(() => {
-        setElapsed(prev => prev + 1);
-      }, 1000);
-    } else {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+  // Get elapsed time from checkpoint (single source of truth)
+  const getElapsedFromCheckpoint = (): number => {
+    const checkpoint = StorageManager.getSessionCheckpoint();
+    if (checkpoint && checkpoint.startedAt) {
+      return Math.floor((Date.now() - checkpoint.startedAt) / 1000);
     }
+    return 0;
+  };
+
+  // Update elapsed time every second from checkpoint
+  useEffect(() => {
+    // Initial read
+    setElapsed(getElapsedFromCheckpoint());
+
+    // Update every second
+    intervalRef.current = setInterval(() => {
+      setElapsed(getElapsedFromCheckpoint());
+    }, 1000);
+
+    // Also update when page becomes visible
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setElapsed(getElapsedFromCheckpoint());
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isRunning]);
+  }, []);
+
+  // Listen for session end event (from End Session button or inactivity)
+  useEffect(() => {
+    const handleEndSession = () => {
+      // Reset display state
+      setMode(getInitialTimerMode());
+      setElapsed(0);
+      setHasPlayedCompletionSound(false);
+    };
+
+    window.addEventListener('endMeditationSession', handleEndSession);
+    return () => {
+      window.removeEventListener('endMeditationSession', handleEndSession);
+    };
+  }, []);
 
   // Check for count-down completion
   useEffect(() => {
-    if (mode.type === 'count-down' && mode.targetSeconds) {
-      const displayTime = mode.targetSeconds - elapsed;
-
-      if (displayTime <= 0 && elapsed > 0) {
-        // Play audio cue
+    if (mode.type === 'count-down' && mode.targetSeconds && !hasPlayedCompletionSound) {
+      if (elapsed >= mode.targetSeconds) {
+        // Play audio cue once
         if (audioRef.current) {
           audioRef.current.play().catch(e => console.warn('Audio cue blocked:', e));
         }
+        setHasPlayedCompletionSound(true);
 
-        // Switch to count-up mode
+        // Switch to count-up mode showing time beyond goal
         console.log('🎯 Goal reached! Continuing in count-up mode...');
         setMode({ type: 'count-up' });
-        // Reset elapsed to 0 for count-up
-        setElapsed(0);
+        StorageManager.updateSettings({
+          timerSettings: { type: 'count-up' }
+        });
       }
     }
-  }, [elapsed, mode]);
+  }, [elapsed, mode, hasPlayedCompletionSound]);
 
   // Format time as HH:MM:SS or MM:SS
   const formatTime = (seconds: number): string => {
@@ -94,11 +127,10 @@ export const UnifiedTimer: React.FC = () => {
     return 0;
   };
 
-  // Handle preset button clicks
+  // Handle preset button clicks - just changes display mode, doesn't reset session
   const handlePreset = (minutes: number) => {
     setMode({ type: 'count-down', targetSeconds: minutes * 60 });
-    setElapsed(0);
-    setIsRunning(true);
+    setHasPlayedCompletionSound(false);
     // Persist timer selection
     StorageManager.updateSettings({
       timerSettings: { type: 'count-down', targetMinutes: minutes }
@@ -114,11 +146,9 @@ export const UnifiedTimer: React.FC = () => {
     }
   };
 
-  // Reset to count-up mode
+  // Reset to count-up mode - just changes display, doesn't reset session
   const handleReset = () => {
     setMode({ type: 'count-up' });
-    setElapsed(0);
-    setIsRunning(true);
     // Persist open session selection
     StorageManager.updateSettings({
       timerSettings: { type: 'count-up' }
