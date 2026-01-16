@@ -10,7 +10,8 @@ import { BackgroundManager } from './components/BackgroundManager';
 import { AudioPlayer, AudioPlayerHandle } from './components/AudioPlayer';
 import { StatsManager } from './components/StatsManager';
 import { SettingsPanel } from './components/SettingsPanel';
-import { StorageManager, SESSION_BACKGROUND_THRESHOLD_MS } from './utils/storage';
+import { SessionConfirmationPopup } from './components/SessionConfirmationPopup';
+import { StorageManager, PendingOrphanSession } from './utils/storage';
 import { initializeUser } from './lib/database';
 
 const App = () => {
@@ -20,55 +21,55 @@ const App = () => {
   const [userId, setUserId] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [pendingOrphanSession, setPendingOrphanSession] = useState<PendingOrphanSession | null>(null);
   const audioRef = useRef<AudioPlayerHandle | null>(null);
 
-  // Check if silent mode is selected or if resuming an existing session
+  // Check if silent mode is selected
   useEffect(() => {
     const settings = StorageManager.getSettings();
     if (settings.selectedAudioId === 'silence') {
       setIsSilentMode(true);
       setIsAudioBlocked(false);
       setIsMuted(true);
-      return;
-    }
-
-    // Check if we're resuming an existing session
-    const checkpoint = StorageManager.getSessionCheckpoint();
-    if (checkpoint && checkpoint.startedAt) {
-      // Determine if session should continue (same logic as GlobalCounter/UnifiedTimer)
-      const shouldContinue = (() => {
-        if (checkpoint.wasPageVisible) {
-          return true;
-        }
-        if (checkpoint.lastHiddenAt) {
-          const timeSinceHidden = Date.now() - checkpoint.lastHiddenAt;
-          return timeSinceHidden <= SESSION_BACKGROUND_THRESHOLD_MS;
-        }
-        const timeSinceLastCheckpoint = Date.now() - checkpoint.lastCheckpoint;
-        return timeSinceLastCheckpoint <= SESSION_BACKGROUND_THRESHOLD_MS;
-      })();
-
-      if (shouldContinue) {
-        // Resuming session - skip the entry overlay and auto-play audio
-        setIsAudioBlocked(false);
-        setIsPlaying(true);
-        // Audio will be started by the effect below after audioRef is set
-      }
     }
   }, []);
 
-  // Auto-play audio when resuming a session (after audioRef is ready)
+  // Check for pending orphan session on mount
   useEffect(() => {
-    if (isPlaying && !isAudioBlocked && !isSilentMode && audioRef.current) {
-      // Try to auto-play - this may fail due to browser autoplay policy
-      // but will work if the browser remembers the user's previous interaction
-      audioRef.current.play().catch(() => {
-        // Autoplay blocked - user will need to tap to start audio
-        // But session still continues without audio
-        console.log('Audio autoplay blocked on resume - session continues without audio');
-      });
+    const pending = StorageManager.getPendingOrphanSession();
+    if (pending) {
+      setPendingOrphanSession(pending);
     }
-  }, [isPlaying, isAudioBlocked, isSilentMode]);
+  }, []);
+
+  // Listen for orphaned session found event
+  useEffect(() => {
+    const handleOrphanedSessionFound = (event: Event) => {
+      const customEvent = event as CustomEvent<PendingOrphanSession>;
+      setPendingOrphanSession(customEvent.detail);
+    };
+
+    window.addEventListener('orphanedSessionFound', handleOrphanedSessionFound);
+    return () => {
+      window.removeEventListener('orphanedSessionFound', handleOrphanedSessionFound);
+    };
+  }, []);
+
+  // Handle orphan session confirmation
+  const handleConfirmOrphanSession = () => {
+    if (pendingOrphanSession) {
+      window.dispatchEvent(new CustomEvent('confirmOrphanSession', {
+        detail: pendingOrphanSession
+      }));
+      setPendingOrphanSession(null);
+    }
+  };
+
+  // Handle orphan session denial
+  const handleDenyOrphanSession = () => {
+    window.dispatchEvent(new CustomEvent('denyOrphanSession'));
+    setPendingOrphanSession(null);
+  };
 
   // Initialize user ID and sync with database
   useEffect(() => {
@@ -116,7 +117,7 @@ const App = () => {
     window.dispatchEvent(new CustomEvent('endMeditationSession'));
   };
 
-  // Listen for session end from GlobalCounter (background timeout)
+  // Listen for session end events (allows programmatic session ending)
   useEffect(() => {
     const handleSessionEnded = () => {
       // Stop audio and show entry overlay
@@ -134,8 +135,14 @@ const App = () => {
 
   // Handle user interaction to start/toggle audio
   const handleInteraction = async () => {
+    const wasBlocked = isAudioBlocked;
+
     if (isSilentMode) {
       setIsAudioBlocked(false);
+      // Trigger session start immediately when tapping past entry screen
+      if (wasBlocked) {
+        window.dispatchEvent(new CustomEvent('startMeditationSession'));
+      }
       return;
     }
 
@@ -145,6 +152,10 @@ const App = () => {
         setIsPlaying(true);
         setIsMuted(false);
         setIsAudioBlocked(false);
+        // Trigger session start immediately when tapping past entry screen
+        if (wasBlocked) {
+          window.dispatchEvent(new CustomEvent('startMeditationSession'));
+        }
       } else if (isMuted) {
         audioRef.current?.setMuted(false);
         setIsMuted(false);
@@ -155,6 +166,10 @@ const App = () => {
     } catch (error) {
       console.error('Audio interaction failed:', error);
       setIsAudioBlocked(false);
+      // Still trigger session start even if audio fails
+      if (wasBlocked) {
+        window.dispatchEvent(new CustomEvent('startMeditationSession'));
+      }
     }
   };
 
@@ -169,7 +184,7 @@ const App = () => {
 
       <AudioPlayer ref={audioRef} isMuted={isMuted} userId={userId} />
 
-      <div className="relative z-10 flex flex-col items-center justify-between min-h-screen py-10 px-6 pointer-events-none">
+      <div className="relative z-10 flex flex-col items-center justify-between min-h-screen py-10 px-6 pointer-events-none overflow-y-auto">
         {/* Settings Button - Top Right */}
         <div className="absolute top-4 right-4 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
           <button
@@ -248,7 +263,7 @@ const App = () => {
         onClose={() => setIsSettingsOpen(false)}
       />
 
-      {isAudioBlocked && (
+      {isAudioBlocked && !pendingOrphanSession && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xl transition-opacity duration-1000 cursor-pointer"
           onClick={handleInteraction}
@@ -262,6 +277,14 @@ const App = () => {
             </p>
           </div>
         </div>
+      )}
+
+      {pendingOrphanSession && (
+        <SessionConfirmationPopup
+          durationSeconds={pendingOrphanSession.durationSeconds}
+          onConfirm={handleConfirmOrphanSession}
+          onDeny={handleDenyOrphanSession}
+        />
       )}
     </div>
   );

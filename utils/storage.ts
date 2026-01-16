@@ -26,19 +26,14 @@ interface LocalStats {
   sessionsCount: number;
 }
 
-// Session continuation threshold: only applies when page was backgrounded
-// If page was in foreground (even with screen locked), session continues indefinitely
-export const SESSION_BACKGROUND_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
-
 // Active session checkpoint - saved frequently to survive page close
+// Sessions only end when user explicitly ends them (button, refresh, or close)
 interface SessionCheckpoint {
   sessionId: string;
   userId: string;
   startedAt: number;  // timestamp
   lastCheckpoint: number;  // timestamp of last save
   elapsedSeconds: number;  // seconds elapsed at last checkpoint
-  wasPageVisible: boolean;  // true if page was in foreground at last checkpoint
-  lastHiddenAt: number | null;  // timestamp when page last went to background (null if never hidden)
 }
 
 const STORAGE_KEYS = {
@@ -46,8 +41,18 @@ const STORAGE_KEYS = {
   DISPLAY_NAME: 'om-display-name',
   SETTINGS: 'om-user-settings',
   LOCAL_STATS: 'om-local-stats',
-  SESSION_CHECKPOINT: 'om-session-checkpoint'
+  SESSION_CHECKPOINT: 'om-session-checkpoint',
+  PENDING_ORPHAN_SESSION: 'om-pending-orphan-session'
 };
+
+// Orphaned session awaiting user confirmation
+interface PendingOrphanSession {
+  sessionId: string;
+  userId: string;
+  startedAt: number;
+  endedAt: number;
+  durationSeconds: number;
+}
 
 const DB_NAME = 'MeditationTimerDB';
 const DB_VERSION = 1;
@@ -279,7 +284,36 @@ export const StorageManager = {
    */
   clearSessionCheckpoint: (): void => {
     localStorage.removeItem(STORAGE_KEYS.SESSION_CHECKPOINT);
+  },
+
+  /**
+   * Save pending orphan session (needs user confirmation)
+   */
+  savePendingOrphanSession: (session: PendingOrphanSession): void => {
+    localStorage.setItem(STORAGE_KEYS.PENDING_ORPHAN_SESSION, JSON.stringify(session));
+  },
+
+  /**
+   * Get pending orphan session (if exists)
+   */
+  getPendingOrphanSession: (): PendingOrphanSession | null => {
+    const stored = localStorage.getItem(STORAGE_KEYS.PENDING_ORPHAN_SESSION);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * Clear pending orphan session (after user confirms or denies)
+   */
+  clearPendingOrphanSession: (): void => {
+    localStorage.removeItem(STORAGE_KEYS.PENDING_ORPHAN_SESSION);
   }
 };
 
-export type { SessionCheckpoint };
+export type { SessionCheckpoint, PendingOrphanSession };

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { db } from '../lib/firebase';
 import { doc, updateDoc, serverTimestamp, collection, query, where, getCountFromServer, Timestamp, addDoc, increment } from 'firebase/firestore';
-import { StorageManager, SessionCheckpoint, SESSION_BACKGROUND_THRESHOLD_MS } from '../utils/storage';
+import { StorageManager, SessionCheckpoint, PendingOrphanSession } from '../utils/storage';
 import { getUserCounts, isUsingLocalDatabase, updateUser, endSession, getUser } from '../lib/database';
 
 interface GlobalCounterProps {
@@ -13,21 +13,17 @@ interface GlobalCounterProps {
  * Shows: Active users (concurrent) and Total unique users
  *
  * Session persistence: Saves checkpoints to localStorage every 10 seconds
- * to survive page close. Orphaned sessions are recovered on next visit.
+ * to survive page close.
  *
- * Session continuity logic:
- * - If page was VISIBLE (foreground, even if screen locked): always continue session
- * - If page was HIDDEN (backgrounded/tab switched):
- *   - Return within threshold: continue session
- *   - Return after threshold: end session at lastHiddenAt time, start new session
- * - This allows long meditation sessions while preventing inflation from forgotten tabs
+ * Orphaned session handling:
+ * - When page loads with an existing checkpoint, it's treated as an orphaned session
+ * - User is prompted to confirm they actually meditated for that duration
+ * - Session is only saved to stats if user confirms
  *
- * Note on audio and background detection:
- * Browsers intentionally keep tabs with active audio in "visible" state to prevent
- * audio interruption. This means visibilitychange won't fire when audio is playing.
- * However, on mobile devices with screen lock, visibilitychange DOES fire even with
- * audio playing. The current implementation relies on visibilitychange which works
- * for the primary use case (phone locked during meditation).
+ * Sessions only end when:
+ * - User clicks "End Session" button
+ * - User refreshes the page
+ * - User closes the browser tab
  */
 export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
   const [active, setActive] = useState(0);
@@ -36,97 +32,41 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
   const sessionStartTimeRef = useRef<number | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
-  // Track page visibility state
-  const lastHiddenAtRef = useRef<number | null>(null);
-
-  // Handle checkpoint on mount - either continue or recover the session
+  // Handle checkpoint on mount - orphaned sessions need confirmation
   useEffect(() => {
     if (!userId) return;
 
-    const handleExistingCheckpoint = async () => {
+    const handleExistingCheckpoint = () => {
       const checkpoint = StorageManager.getSessionCheckpoint();
 
       if (checkpoint && checkpoint.userId === userId) {
-        // Determine if session should continue based on visibility
-        const shouldContinue = (() => {
-          // If page was visible (foreground) at last checkpoint, always continue
-          if (checkpoint.wasPageVisible) {
-            console.log('Page was visible at last checkpoint - continuing session');
-            return true;
-          }
+        // Found an orphaned session - create pending session for confirmation
+        const durationSeconds = Math.max(0, Math.floor((checkpoint.lastCheckpoint - checkpoint.startedAt) / 1000));
+        const ONE_HOUR_IN_SECONDS = 60 * 60;
 
-          // Page was hidden (backgrounded) - check how long ago
-          if (checkpoint.lastHiddenAt) {
-            const timeSinceHidden = Date.now() - checkpoint.lastHiddenAt;
-            if (timeSinceHidden <= SESSION_BACKGROUND_THRESHOLD_MS) {
-              console.log(`Page was backgrounded ${Math.floor(timeSinceHidden / 1000)}s ago - continuing session`);
-              return true;
-            }
-            console.log(`Page was backgrounded ${Math.floor(timeSinceHidden / 1000)}s ago - exceeds threshold`);
-            return false;
-          }
+        // Only prompt for confirmation if session was > 1 hour
+        // Shorter sessions are assumed to be intentional page refreshes
+        if (durationSeconds >= ONE_HOUR_IN_SECONDS) {
+          const pendingSession: PendingOrphanSession = {
+            sessionId: checkpoint.sessionId,
+            userId: checkpoint.userId,
+            startedAt: checkpoint.startedAt,
+            endedAt: checkpoint.lastCheckpoint,
+            durationSeconds
+          };
 
-          // Fallback: use lastCheckpoint time (for backwards compatibility with old checkpoints)
-          const timeSinceLastCheckpoint = Date.now() - checkpoint.lastCheckpoint;
-          if (timeSinceLastCheckpoint <= SESSION_BACKGROUND_THRESHOLD_MS) {
-            console.log(`Fallback: ${Math.floor(timeSinceLastCheckpoint / 1000)}s since last checkpoint - continuing`);
-            return true;
-          }
-          return false;
-        })();
+          StorageManager.savePendingOrphanSession(pendingSession);
+          console.log(`Found orphaned session: ${durationSeconds} seconds (>${ONE_HOUR_IN_SECONDS}s) - awaiting user confirmation`);
 
-        if (shouldContinue) {
-          // Restore session state so heartbeat continues it
-          sessionIdRef.current = checkpoint.sessionId;
-          sessionStartTimeRef.current = checkpoint.startedAt;
-          lastHiddenAtRef.current = checkpoint.lastHiddenAt;
-          // Don't clear checkpoint - it will be updated by the next heartbeat
-          return;
+          // Dispatch event to show confirmation popup
+          window.dispatchEvent(new CustomEvent('orphanedSessionFound', {
+            detail: pendingSession
+          }));
+        } else {
+          console.log(`Found short orphaned session: ${durationSeconds} seconds - discarding (< 1 hour)`);
         }
 
-        // Session ended - calculate duration
-        // Use lastHiddenAt if page was backgrounded, otherwise lastCheckpoint
-        const sessionEndTime = checkpoint.lastHiddenAt || checkpoint.lastCheckpoint;
-        const totalSeconds = Math.max(0, Math.floor((sessionEndTime - checkpoint.startedAt) / 1000));
-
-        // Skip if duration is 0 or negative (clock skew protection)
-        if (totalSeconds <= 0) {
-          console.log(`Skipping orphaned session recovery: invalid duration (${totalSeconds}s)`);
-          StorageManager.clearSessionCheckpoint();
-          return;
-        }
-
-        console.log(`Recovering orphaned session: ${totalSeconds} seconds (ended at ${checkpoint.lastHiddenAt ? 'lastHiddenAt' : 'lastCheckpoint'})`);
-
-        try {
-          // Update user stats via abstraction layer
-          const userData = await getUser(userId);
-          if (userData) {
-            await updateUser(userId, {
-              totalSecondsIncrement: totalSeconds,
-              sessionsCountIncrement: 1,
-              lastSeen: true
-            });
-
-            // Update local stats
-            StorageManager.updateLocalStats({
-              totalSeconds: (userData.totalSeconds || 0) + totalSeconds,
-              lastSession: new Date(sessionEndTime).toISOString(),
-              sessionsCount: (userData.sessionsCount || 0) + 1
-            });
-          }
-
-          // Close the orphaned session if it exists
-          if (checkpoint.sessionId) {
-            await endSession(checkpoint.sessionId, totalSeconds, sessionEndTime).catch(() => {
-              // Session might not exist, that's ok
-            });
-          }
-        } catch (error) {
-          console.error('Failed to recover orphaned session:', error);
-        }
-
-        // Clear the checkpoint - a new session will start
+        // Clear the checkpoint - don't resume the old session
         StorageManager.clearSessionCheckpoint();
       }
     };
@@ -137,16 +77,12 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
   const saveCheckpoint = () => {
     if (!userId || !sessionStartTimeRef.current || !sessionIdRef.current) return;
 
-    const isPageVisible = document.visibilityState === 'visible';
-
     const checkpoint: SessionCheckpoint = {
       sessionId: sessionIdRef.current,
       userId,
       startedAt: sessionStartTimeRef.current,
       lastCheckpoint: Date.now(),
-      elapsedSeconds: Math.floor((Date.now() - sessionStartTimeRef.current) / 1000),
-      wasPageVisible: isPageVisible,
-      lastHiddenAt: lastHiddenAtRef.current
+      elapsedSeconds: Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
     };
 
     StorageManager.saveSessionCheckpoint(checkpoint);
@@ -356,78 +292,68 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
         // Clear session state
         sessionIdRef.current = null;
         sessionStartTimeRef.current = null;
-        lastHiddenAtRef.current = null;
         StorageManager.clearSessionCheckpoint();
       }
     };
 
-    // Track when page goes to background
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-        // Page is going to background - record timestamp
-        lastHiddenAtRef.current = Date.now();
-        saveCheckpoint();
-      } else if (document.visibilityState === 'visible') {
-        // Page is returning to foreground - check if session should end
-        if (lastHiddenAtRef.current) {
-          const timeSinceHidden = Date.now() - lastHiddenAtRef.current;
+    // Handle confirmed orphan session (user confirmed they meditated)
+    const handleConfirmOrphanSession = async (event: Event) => {
+      const customEvent = event as CustomEvent<PendingOrphanSession>;
+      const session = customEvent.detail;
 
-          if (timeSinceHidden > SESSION_BACKGROUND_THRESHOLD_MS) {
-            // Session was backgrounded too long - end it at lastHiddenAt and start fresh
-            console.log(`Session was backgrounded for ${Math.floor(timeSinceHidden / 1000)}s - ending session`);
+      if (!session || session.userId !== userId) return;
 
-            if (sessionIdRef.current && sessionStartTimeRef.current) {
-              const durationSeconds = Math.max(0, Math.floor((lastHiddenAtRef.current - sessionStartTimeRef.current) / 1000));
+      try {
+        // End session via abstraction layer
+        await endSession(session.sessionId, session.durationSeconds, session.endedAt).catch(() => {});
 
-              try {
-                // End session via abstraction layer - ended at lastHiddenAt
-                await endSession(sessionIdRef.current, durationSeconds, lastHiddenAtRef.current).catch(() => {});
-
-                // Update user stats (only if positive duration)
-                if (durationSeconds > 0) {
-                  await updateUser(userId, {
-                    totalSecondsIncrement: durationSeconds,
-                    sessionsCountIncrement: 1,
-                    lastSeen: true
-                  });
-                }
-
-                // Update local stats
-                const userData = await getUser(userId);
-                if (userData) {
-                  StorageManager.updateLocalStats({
-                    totalSeconds: userData.totalSeconds || 0,
-                    lastSession: new Date(lastHiddenAtRef.current).toISOString(),
-                    sessionsCount: userData.sessionsCount || 0
-                  });
-                }
-              } catch (error) {
-                console.error('Failed to end backgrounded session:', error);
-              }
-
-              // Clear session state - new session will start on next heartbeat
-              sessionIdRef.current = null;
-              sessionStartTimeRef.current = null;
-              StorageManager.clearSessionCheckpoint();
-
-              // Dispatch event to reset UI
-              window.dispatchEvent(new CustomEvent('endMeditationSession'));
-            }
-
-            // Reset lastHiddenAt for the new session
-            lastHiddenAtRef.current = null;
-          }
+        // Update user stats
+        if (session.durationSeconds > 0) {
+          await updateUser(userId, {
+            totalSecondsIncrement: session.durationSeconds,
+            sessionsCountIncrement: 1,
+            lastSeen: true
+          });
         }
 
-        // Save checkpoint (either continuing session or will start new one)
-        saveCheckpoint();
+        // Update local stats
+        const userData = await getUser(userId);
+        if (userData) {
+          StorageManager.updateLocalStats({
+            totalSeconds: userData.totalSeconds || 0,
+            lastSession: new Date(session.endedAt).toISOString(),
+            sessionsCount: userData.sessionsCount || 0
+          });
+        }
+
+        console.log(`Orphan session confirmed and saved: ${session.durationSeconds} seconds`);
+      } catch (error) {
+        console.error('Failed to save confirmed orphan session:', error);
+      }
+
+      StorageManager.clearPendingOrphanSession();
+    };
+
+    // Handle denied orphan session (user said they didn't meditate)
+    const handleDenyOrphanSession = () => {
+      console.log('Orphan session denied by user');
+      StorageManager.clearPendingOrphanSession();
+    };
+
+    // Handle session start request (from tapping past entry screen)
+    const handleStartSession = () => {
+      // Immediately start a session if not already active
+      if (!sessionIdRef.current) {
+        fetchStats();
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('endMeditationSession', handleEndSession);
+    window.addEventListener('confirmOrphanSession', handleConfirmOrphanSession);
+    window.addEventListener('denyOrphanSession', handleDenyOrphanSession);
+    window.addEventListener('startMeditationSession', handleStartSession);
 
     return () => {
       // Cleanup - try to end session
@@ -435,8 +361,10 @@ export const GlobalCounter: React.FC<GlobalCounterProps> = ({ userId }) => {
       saveCheckpoint();
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('endMeditationSession', handleEndSession);
+      window.removeEventListener('confirmOrphanSession', handleConfirmOrphanSession);
+      window.removeEventListener('denyOrphanSession', handleDenyOrphanSession);
+      window.removeEventListener('startMeditationSession', handleStartSession);
     };
   }, [userId]);
 

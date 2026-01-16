@@ -70,7 +70,7 @@ export const UnifiedTimer: React.FC = () => {
     };
   }, []);
 
-  // Listen for session end event (from End Session button or inactivity)
+  // Listen for session end event (from End Session button)
   useEffect(() => {
     const handleEndSession = () => {
       // Reset display state
