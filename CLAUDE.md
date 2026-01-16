@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## Git Commits
+
+**Do NOT add `Co-Authored-By: Claude` to commit messages.** Keep commit messages simple and focused on the changes made.
+
 ## Commands
 
 ```bash
